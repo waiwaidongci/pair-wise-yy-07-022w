@@ -5,7 +5,9 @@ import type {
   DiagramConnector,
   DiagramNode,
   Point,
+  Swimlane,
 } from '../types/diagram';
+import { laneById, laneRects } from './laneGeometry';
 
 export const DEFAULT_NODE_SIZE: Record<DiagramNode['kind'], { width: number; height: number }> = {
   rectangle: { width: 160, height: 72 },
@@ -44,12 +46,18 @@ export function chooseAnchors(from: DiagramNode, to: DiagramNode) {
 export function routeConnector(
   connector: DiagramConnector,
   nodes: DiagramNode[],
+  lanes: Swimlane[] = [],
 ): number[] {
   const from = nodes.find((node) => node.id === connector.fromId);
   const to = nodes.find((node) => node.id === connector.toId);
   if (!from || !to) return [];
   const start = anchorPoint(from, connector.fromAnchor);
   const end = anchorPoint(to, connector.toAnchor);
+
+  // 跨泳道：先尝试贴着两条泳道的边界重新走线。
+  const crossLane = crossLaneRoute(connector, from, to, nodes, lanes);
+  if (crossLane) return crossLane;
+
   const startDirection = directionForAnchor(connector.fromAnchor);
   const endDirection = directionForAnchor(connector.toAnchor);
   const startLead = {
@@ -80,6 +88,51 @@ export function routeConnector(
     end,
   ];
   return flattenPoints(dedupePoints(detour));
+}
+
+/** 跨泳道连线：从起点引出后贴到起始泳道朝向目标泳道的边界，沿边界横走再接到终点。 */
+function crossLaneRoute(
+  connector: DiagramConnector,
+  from: DiagramNode,
+  to: DiagramNode,
+  nodes: DiagramNode[],
+  lanes: Swimlane[],
+): number[] | null {
+  const rects = laneRects(lanes);
+  const fromRect = rects.find((rect) => rect.lane.id === from.swimlaneId);
+  const toRect = rects.find((rect) => rect.lane.id === to.swimlaneId);
+  if (!fromRect || !toRect || fromRect.lane.id === toRect.lane.id) return null;
+  if (fromRect.collapsed || toRect.collapsed) return null;
+  const start = anchorPoint(from, connector.fromAnchor);
+  const end = anchorPoint(to, connector.toAnchor);
+  const startDirection = directionForAnchor(connector.fromAnchor);
+  const endDirection = directionForAnchor(connector.toAnchor);
+  const startLead = {
+    x: start.x + startDirection.x * 26,
+    y: start.y + startDirection.y * 26,
+  };
+  const endLead = {
+    x: end.x + endDirection.x * 26,
+    y: end.y + endDirection.y * 26,
+  };
+  // 边界取起始泳道朝向目标泳道的那条边。
+  const boundaryY = toRect.y >= fromRect.bottom ? fromRect.bottom : fromRect.y;
+  const path = dedupePoints([
+    start,
+    startLead,
+    { x: startLead.x, y: boundaryY },
+    { x: endLead.x, y: boundaryY },
+    endLead,
+    end,
+  ]);
+  const obstacles = nodes.filter((node) => node.id !== from.id && node.id !== to.id);
+  const collides = path.some((point, index) => {
+    if (index === path.length - 1) return false;
+    const next = path[index + 1];
+    return obstacles.some((node) => segmentIntersectsNode(point, next, node, 12));
+  });
+  if (collides) return null;
+  return flattenPoints(path);
 }
 
 function directionForAnchor(side: AnchorSide): Point {
@@ -135,6 +188,7 @@ export function calculateAlignmentGuides(
   activeNodes: DiagramNode[],
   allNodes: DiagramNode[],
   threshold: number,
+  lanes: Swimlane[] = [],
 ): AlignmentGuide[] {
   const activeIds = new Set(activeNodes.map((node) => node.id));
   const otherNodes = allNodes.filter((node) => !activeIds.has(node.id));
@@ -175,5 +229,23 @@ export function calculateAlignmentGuides(
       });
     });
   });
-  return guides.slice(0, 8);
+  // 泳道的上下边界也参与对齐参考线。
+  const activeRect = laneById(lanes, active.swimlaneId);
+  laneRects(lanes).forEach((rect) => {
+    if (rect.collapsed) return;
+    [rect.y, rect.bottom].forEach((position) => {
+      activePoints.y.forEach((activePosition) => {
+        if (Math.abs(position - activePosition) <= threshold) {
+          guides.push({
+            orientation: 'horizontal',
+            position,
+            start: active.x - 24,
+            end: active.x + active.width + 24,
+            label: activeRect ? '泳道边' : '泳道边界',
+          });
+        }
+      });
+    });
+  });
+  return guides.slice(0, 10);
 }

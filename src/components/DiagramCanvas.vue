@@ -9,6 +9,7 @@ import type {
   DiagramNode,
   NodeKind,
   Point,
+  Swimlane,
 } from '../types/diagram';
 import {
   anchorPoint,
@@ -16,6 +17,18 @@ import {
   nodeCenter,
   routeConnector,
 } from '../utils/diagramGeometry';
+import {
+  COLLAPSED_LANE_HEIGHT,
+  LANE_COLORS,
+  LANE_HEADER_HEIGHT,
+  isNodeInCollapsedLane,
+  laneAtY,
+  laneById,
+  laneColor,
+  laneRects,
+  laneSpan,
+  pathCrossesLane,
+} from '../utils/laneGeometry';
 import MiniMap from './MiniMap.vue';
 
 const store = useDiagramStore();
@@ -35,6 +48,24 @@ let dragState:
       primaryId: string;
       startPositions: Record<string, Point>;
       moved: boolean;
+    }
+  | null = null;
+let laneDrag:
+  | {
+      id: string;
+      startPointerY: number;
+      startBandY: number;
+      nodeIds: string[];
+      startNodePositions: Record<string, Point>;
+    }
+  | null = null;
+let laneResize:
+  | {
+      id: string;
+      startPointerY: number;
+      startHeight: number;
+      belowIds: string[];
+      startBelowPositions: Record<string, Point>;
     }
   | null = null;
 
@@ -109,12 +140,40 @@ function renderDiagram() {
   if (!layer) return;
   layer.destroyChildren();
   renderGrid(layer);
+  renderLanes(layer);
   const connectorNodes = [...store.connectors].sort((a, b) => a.zIndex - b.zIndex);
-  connectorNodes.forEach((connector) => layer.add(createConnectorNode(connector)));
+  connectorNodes.forEach((connector) => {
+    if (isConnectorHidden(connector)) return;
+    layer.add(createConnectorNode(connector));
+  });
   const diagramNodes = [...store.nodes].sort((a, b) => a.zIndex - b.zIndex);
-  diagramNodes.forEach((node) => layer.add(createDiagramNode(node)));
+  diagramNodes.forEach((node) => {
+    if (isNodeInCollapsedLane(node, store.swimlanes)) return;
+    layer.add(createDiagramNode(node));
+  });
   applyViewport();
   layer.batchDraw();
+}
+
+function renderLanes(layer: Konva.Layer) {
+  const rects = laneRects(store.swimlanes);
+  const span = laneSpan(store.nodes);
+  rects.forEach((rect) => layer.add(createLaneGroup(rect, span)));
+}
+
+function isConnectorHidden(connector: DiagramConnector): boolean {
+  const from = store.nodes.find((node) => node.id === connector.fromId);
+  const to = store.nodes.find((node) => node.id === connector.toId);
+  if (!from || !to) return true;
+  if (isNodeInCollapsedLane(from, store.swimlanes) || isNodeInCollapsedLane(to, store.swimlanes)) {
+    return true;
+  }
+  const points = routeConnector(connector, store.nodes, store.swimlanes);
+  if (!points.length) return true;
+  const span = laneSpan(store.nodes);
+  return laneRects(store.swimlanes).some(
+    (rect) => rect.collapsed && pathCrossesLane(points, rect, span),
+  );
 }
 
 function renderGrid(layer: Konva.Layer) {
@@ -144,6 +203,342 @@ function renderGrid(layer: Konva.Layer) {
     );
   }
   layer.add(gridGroup);
+}
+
+function createLaneGroup(
+  rect: ReturnType<typeof laneRects>[number],
+  span: { x0: number; x1: number },
+): Konva.Group {
+  const colors = laneColor(rect.index);
+  const group = new Konva.Group({
+    id: `lane-${rect.lane.id}`,
+    name: 'swimlane',
+    x: 0,
+    y: rect.y,
+  });
+  const width = span.x1 - span.x0;
+
+  group.add(
+    new Konva.Rect({
+      name: 'lane-body',
+      x: span.x0,
+      y: 0,
+      width,
+      height: rect.visualHeight,
+      fill: colors.fill,
+      stroke: colors.stroke,
+      strokeWidth: 1,
+      listening: false,
+    }),
+  );
+  group.add(
+    new Konva.Rect({
+      name: 'lane-header',
+      x: span.x0,
+      y: 0,
+      width,
+      height: LANE_HEADER_HEIGHT,
+      fill: colors.header,
+      stroke: colors.stroke,
+      strokeWidth: 1,
+      draggable: true,
+    }),
+  );
+  group.add(
+    new Konva.Text({
+      x: span.x0 + 10,
+      y: 8,
+      text: rect.collapsed ? '▶' : '▼',
+      fill: colors.text,
+      fontSize: 12,
+      listening: false,
+    }),
+  );
+  const nameText = new Konva.Text({
+    x: span.x0 + 32,
+    y: 8,
+    text: rect.lane.name,
+    fill: colors.text,
+    fontSize: 13,
+    fontStyle: 'bold',
+    listening: false,
+  });
+  group.add(nameText);
+  const nodeCount = store.nodes.filter((node) => node.swimlaneId === rect.lane.id).length;
+  group.add(
+    new Konva.Text({
+      x: span.x0 + 32 + Math.max(80, nameText.width() + 16),
+      y: 9,
+      text: `${nodeCount} 个图元`,
+      fill: colors.text,
+      opacity: 0.7,
+      fontSize: 10,
+      listening: false,
+    }),
+  );
+  const deleteText = new Konva.Text({
+    x: span.x1 - 28,
+    y: 7,
+    text: '×',
+    fill: colors.text,
+    fontSize: 16,
+    listening: true,
+  });
+  deleteText.on('click tap', (event) => {
+    event.cancelBubble = true;
+    store.removeLane(rect.lane.id);
+  });
+  deleteText.on('mouseenter', () => {
+    stageRef.value?.container().style.setProperty('cursor', 'pointer');
+  });
+  deleteText.on('mouseleave', () => {
+    stageRef.value?.container().style.setProperty('cursor', 'default');
+  });
+  group.add(deleteText);
+
+  const collapseHit = new Konva.Rect({
+    x: span.x0,
+    y: 0,
+    width: 28,
+    height: LANE_HEADER_HEIGHT,
+    fill: 'transparent',
+    listening: true,
+  });
+  collapseHit.on('click tap', (event) => {
+    event.cancelBubble = true;
+    store.toggleLaneCollapse(rect.lane.id);
+  });
+  group.add(collapseHit);
+
+  nameText.on('dblclick dbltap', (event) => {
+    event.cancelBubble = true;
+    promptLaneName(rect.lane);
+  });
+
+  if (!rect.collapsed) {
+    const handle = new Konva.Rect({
+      name: 'lane-resize',
+      x: span.x0,
+      y: rect.visualHeight - 5,
+      width,
+      height: 10,
+      fill: 'transparent',
+      draggable: true,
+    });
+    handle.on('mouseenter', () => {
+      stageRef.value?.container().style.setProperty('cursor', 'ns-resize');
+    });
+    handle.on('mouseleave', () => {
+      stageRef.value?.container().style.setProperty('cursor', 'default');
+    });
+    handle.on('dragstart', (event) => {
+      event.cancelBubble = true;
+      laneResize = {
+        id: rect.lane.id,
+        startPointerY: pointerToWorld().y,
+        startHeight: rect.lane.height,
+        belowIds: laneRects(store.swimlanes)
+          .slice(rect.index + 1)
+          .map((item) => item.lane.id),
+        startBelowPositions: Object.fromEntries(
+          store.nodes
+            .filter((node) => node.swimlaneId && laneRects(store.swimlanes).slice(rect.index + 1).some((item) => item.lane.id === node.swimlaneId))
+            .map((node) => [node.id, { x: node.x, y: node.y }]),
+        ),
+      };
+    });
+    handle.on('dragmove', () => {
+      if (!laneResize) return;
+      const pointerY = pointerToWorld().y;
+      const desired = laneResize.startHeight + (pointerY - laneResize.startPointerY);
+      const contentBottom = Math.max(
+        ...store.nodes
+          .filter((node) => node.swimlaneId === laneResize?.id)
+          .map((node) => node.y + node.height),
+        -Infinity,
+      );
+      const currentRect = laneById(store.swimlanes, laneResize.id);
+      const minHeight = currentRect
+        ? Math.max(120, contentBottom - currentRect.y + 24)
+        : 120;
+      const nextHeight = Math.max(minHeight, desired);
+      const delta = nextHeight - laneResize.startHeight;
+      const body = group.findOne('.lane-body') as Konva.Rect | undefined;
+      body?.height(nextHeight);
+      const resizeHandle = group.findOne('.lane-resize') as Konva.Rect | undefined;
+      resizeHandle?.y(nextHeight - 5);
+      laneRects(store.swimlanes).forEach((item) => {
+        if (item.index <= rect.index) return;
+        const belowGroup = contentLayerRef.value?.findOne(`#lane-${item.lane.id}`) as Konva.Group | undefined;
+        belowGroup?.y(item.y + delta);
+      });
+      const previewNodes = store.nodes.map((node) => {
+        const start = laneResize?.startBelowPositions[node.id];
+        if (start && node.swimlaneId && laneRects(store.swimlanes).slice(rect.index + 1).some((item) => item.lane.id === node.swimlaneId)) {
+          return { ...node, y: start.y + delta };
+        }
+        return node;
+      });
+      refreshConnectorRoutes(new Set(laneResize.belowIds.flatMap((id) => store.nodes.filter((n) => n.swimlaneId === id).map((n) => n.id))), previewNodes);
+    });
+    handle.on('dragend', () => {
+      if (!laneResize) return;
+      const pointerY = pointerToWorld().y;
+      const desired = laneResize.startHeight + (pointerY - laneResize.startPointerY);
+      store.resizeLane(laneResize.id, desired);
+      laneResize = null;
+      void nextTick(renderDiagram);
+    });
+    group.add(handle);
+  }
+
+  const header = group.findOne('.lane-header') as Konva.Rect | undefined;
+  header?.on('dragstart', (event) => {
+    event.cancelBubble = true;
+    laneDrag = {
+      id: rect.lane.id,
+      startPointerY: pointerToWorld().y,
+      startBandY: rect.y,
+      nodeIds: store.nodes.filter((node) => node.swimlaneId === rect.lane.id).map((node) => node.id),
+      startNodePositions: Object.fromEntries(
+        store.nodes
+          .filter((node) => node.swimlaneId === rect.lane.id)
+          .map((node) => [node.id, { x: node.x, y: node.y }]),
+      ),
+    };
+  });
+  header?.on('dragmove', () => {
+    if (!laneDrag) return;
+    const pointerY = pointerToWorld().y;
+    const dy = pointerY - laneDrag.startPointerY;
+    group.y(laneDrag.startBandY + dy);
+    laneDrag.nodeIds.forEach((id) => {
+      const start = laneDrag?.startNodePositions[id];
+      if (!start) return;
+      const child = contentLayerRef.value?.findOne(`#${id}`) as Konva.Group | undefined;
+      child?.position({ x: start.x, y: start.y + dy });
+    });
+    const previewNodes = store.nodes.map((node) => {
+      const start = laneDrag?.startNodePositions[node.id];
+      return start ? { ...node, y: start.y + dy } : node;
+    });
+    refreshConnectorRoutes(new Set(laneDrag.nodeIds), previewNodes);
+    drawReorderIndicator(pointerY, laneDrag.id);
+  });
+  header?.on('dragend', () => {
+    if (!laneDrag) return;
+    const pointerY = pointerToWorld().y;
+    const toIndex = dropIndexForPointer(pointerY, laneDrag.id);
+    store.reorderLane(laneDrag.id, toIndex);
+    laneDrag = null;
+    clearReorderIndicator();
+    void nextTick(renderDiagram);
+  });
+
+  return group;
+}
+
+function dropIndexForPointer(pointerY: number, draggedId: string): number {
+  const rects = laneRects(store.swimlanes).filter((rect) => rect.lane.id !== draggedId);
+  let index = rects.length;
+  for (let i = 0; i < rects.length; i += 1) {
+    if (pointerY < rects[i].y + rects[i].visualHeight / 2) {
+      index = i;
+      break;
+    }
+  }
+  return index;
+}
+
+function drawReorderIndicator(pointerY: number, draggedId: string) {
+  const layer = guideLayerRef.value;
+  if (!layer) return;
+  clearReorderIndicator();
+  const rects = laneRects(store.swimlanes).filter((rect) => rect.lane.id !== draggedId);
+  const span = laneSpan(store.nodes);
+  let boundaryY = rects.length ? rects[rects.length - 1].bottom : 0;
+  for (let i = 0; i < rects.length; i += 1) {
+    if (pointerY < rects[i].y + rects[i].visualHeight / 2) {
+      boundaryY = rects[i].y;
+      break;
+    }
+  }
+  layer.add(
+    new Konva.Line({
+      name: 'lane-reorder-indicator',
+      points: [span.x0, boundaryY, span.x1, boundaryY],
+      stroke: '#1769ff',
+      strokeWidth: 2,
+      dash: [8, 5],
+      listening: false,
+    }),
+  );
+  layer.batchDraw();
+}
+
+function clearReorderIndicator() {
+  const layer = guideLayerRef.value;
+  if (!layer) return;
+  layer.find('.lane-reorder-indicator').forEach((node) => node.destroy());
+  layer.batchDraw();
+}
+
+function promptLaneName(lane: Swimlane) {
+  // 延迟引入避免循环依赖。
+  import('element-plus').then(async ({ ElMessageBox }) => {
+    try {
+      const { value } = await ElMessageBox.prompt('泳道名称', '重命名泳道', {
+        inputValue: lane.name,
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+      });
+      store.renameLane(lane.id, value);
+    } catch {
+      // 用户取消。
+    }
+  });
+}
+
+function laneNodeCount(laneId: string): number {
+  return store.nodes.filter((node) => node.swimlaneId === laneId).length;
+}
+
+let draggingLaneId: string | null = null;
+
+function onLaneRowDragstart(event: DragEvent, laneId: string) {
+  draggingLaneId = laneId;
+  event.dataTransfer?.setData('text/x-lane-id', laneId);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+}
+
+function onLaneRowDragover(event: DragEvent, index: number) {
+  if (!draggingLaneId) return;
+  event.dataTransfer && (event.dataTransfer.dropEffect = 'move');
+}
+
+function onLaneRowDrop(event: DragEvent, index: number) {
+  const laneId = event.dataTransfer?.getData('text/x-lane-id') || draggingLaneId;
+  draggingLaneId = null;
+  if (!laneId) return;
+  const rect = event.currentTarget as HTMLElement;
+  const after = event.offsetY > rect.clientHeight / 2;
+  const toIndex = after ? index + 1 : index;
+  store.reorderLane(laneId, Math.min(toIndex, store.swimlanes.length - 1));
+}
+
+function removeLane(laneId: string) {
+  import('element-plus').then(async ({ ElMessageBox }) => {
+    try {
+      await ElMessageBox.confirm('删除该泳道？泳道内图元会移出泳道，位置保留。', '删除泳道', {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      });
+      store.removeLane(laneId);
+    } catch {
+      // 用户取消。
+    }
+  });
 }
 
 function createDiagramNode(node: DiagramNode): Konva.Group {
@@ -345,7 +740,8 @@ function createDiagramNode(node: DiagramNode): Konva.Group {
         : item;
     });
     const active = previewNodes.filter((item) => dragState?.ids.includes(item.id));
-    renderGuides(calculateAlignmentGuides(active, previewNodes, 7 / store.zoom));
+    renderGuides(calculateAlignmentGuides(active, previewNodes, 7 / store.zoom, store.swimlanes));
+    refreshConnectorRoutes(new Set(dragState?.ids ?? []), previewNodes);
     dragState.moved = Math.abs(deltaX) > 0.5 || Math.abs(deltaY) > 0.5;
   });
   group.on('dragend', () => {
@@ -361,6 +757,16 @@ function createDiagramNode(node: DiagramNode): Konva.Group {
       ]),
     );
     store.commitPositions(positions);
+    const primary = store.nodes.find((item) => item.id === dragState?.primaryId);
+    if (primary) {
+      const target = laneAtY(store.swimlanes, primary.y + primary.height / 2);
+      const targetId = target && !target.collapsed ? target.lane.id : primary.swimlaneId;
+      const changed = dragState.ids.filter((id) => {
+        const node = store.nodes.find((item) => item.id === id);
+        return node && node.swimlaneId !== targetId;
+      });
+      if (changed.length) store.assignNodesToLane(changed, targetId);
+    }
     dragState = null;
     clearGuides();
     void nextTick(renderDiagram);
@@ -462,9 +868,9 @@ function createCenteredText(text: string, width: number, height: number, maxWidt
 }
 
 function createConnectorNode(connector: DiagramConnector): Konva.Group {
-  const points = routeConnector(connector, store.nodes);
+  const points = routeConnector(connector, store.nodes, store.swimlanes);
   const selected = store.selectedConnectorId === connector.id;
-  const group = new Konva.Group({ listening: true });
+  const group = new Konva.Group({ id: `connector-${connector.id}`, listening: true });
   const arrow = new Konva.Arrow({
     points,
     stroke: selected ? '#1769ff' : connector.color,
@@ -506,6 +912,37 @@ function createConnectorNode(connector: DiagramConnector): Konva.Group {
     stageRef.value?.container().style.setProperty('cursor', 'default');
   });
   return group;
+}
+
+/** 只重算受影响（端点图元移动）的连线路径，其余连线保持原样。 */
+function refreshConnectorRoutes(affectedNodeIds?: Set<string>, previewNodes?: DiagramNode[]) {
+  const layer = contentLayerRef.value;
+  if (!layer) return;
+  const nodes = previewNodes ?? store.nodes;
+  store.connectors.forEach((connector) => {
+    if (affectedNodeIds) {
+      const from = nodes.find((node) => node.id === connector.fromId);
+      const to = nodes.find((node) => node.id === connector.toId);
+      if (!from || !to) return;
+      if (!affectedNodeIds.has(from.id) && !affectedNodeIds.has(to.id)) return;
+    }
+    if (isConnectorHidden(connector)) return;
+    const group = layer.findOne(`#connector-${connector.id}`) as Konva.Group | undefined;
+    if (!group) return;
+    const arrow = group.findOne('Arrow') as Konva.Arrow | undefined;
+    if (!arrow) return;
+    const points = routeConnector(connector, nodes, store.swimlanes);
+    if (!points.length) return;
+    arrow.points(points);
+    const label = group.findOne('Text') as Konva.Text | undefined;
+    if (label && connector.label) {
+      const middle = points.length === 4
+        ? { x: points[0], y: points[1] }
+        : { x: points[points.length - 2], y: points[points.length - 1] };
+      label.position({ x: middle.x + 6, y: middle.y - 20 });
+    }
+  });
+  layer.batchDraw();
 }
 
 function renderGuides(guides: ReturnType<typeof calculateAlignmentGuides>) {
@@ -721,7 +1158,7 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => [store.nodes, store.connectors, store.selectedIds, store.selectedConnectorId, store.toolMode],
+  () => [store.nodes, store.connectors, store.swimlanes, store.selectedIds, store.selectedConnectorId, store.toolMode],
   () => void nextTick(renderDiagram),
   { deep: true },
 );
@@ -750,6 +1187,32 @@ watch(
         连线模式：拖动节点边缘蓝色锚点完成连接
       </span>
       <span v-else>选择模式 · 拖动图元查看对齐参考线</span>
+    </div>
+    <div class="lane-panel">
+      <div class="lane-panel__head">
+        <strong>泳道</strong>
+        <button type="button" title="新增泳道" @click="store.addLane()">＋</button>
+      </div>
+      <div class="lane-panel__list">
+        <div
+          v-for="(lane, index) in store.swimlanes"
+          :key="lane.id"
+          class="lane-row"
+          :class="{ 'lane-row--collapsed': lane.collapsed }"
+          draggable="true"
+          @dragstart="onLaneRowDragstart($event, lane.id)"
+          @dragover.prevent="onLaneRowDragover($event, index)"
+          @drop.prevent="onLaneRowDrop($event, index)"
+        >
+          <span class="lane-row__toggle" @click="store.toggleLaneCollapse(lane.id)">
+            {{ lane.collapsed ? '▶' : '▼' }}
+          </span>
+          <span class="lane-row__name" @dblclick="promptLaneName(lane)">{{ lane.name }}</span>
+          <span class="lane-row__count">{{ laneNodeCount(lane.id) }}</span>
+          <span class="lane-row__delete" @click="removeLane(lane.id)">×</span>
+        </div>
+        <div v-if="!store.swimlanes.length" class="lane-panel__empty">暂无泳道</div>
+      </div>
     </div>
     <MiniMap />
     <div class="canvas-actions">

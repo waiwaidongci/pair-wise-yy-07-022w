@@ -175,6 +175,7 @@ function run(action: () => void, message?: string) {
     <footer class="editor-status">
       <span><Document /> {{ store.nodes.length }} 个图元</span>
       <span><Connection /> {{ store.connectors.length }} 条连接</span>
+      <span>{{ store.swimlanes.length }} 条泳道</span>
       <span>选择 {{ store.selectedIds.length }} 项</span>
       <span class="status-spacer" />
       <span>缩放 {{ Math.round(store.zoom * 100) }}%</span>

@@ -447,6 +447,114 @@ kbd {
   color: #175cd3;
 }
 
+.lane-panel {
+  position: absolute;
+  left: 12px;
+  top: 52px;
+  z-index: 5;
+  width: 190px;
+  overflow: hidden;
+  border: 1px solid #dfe5ee;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 3px 10px rgba(16, 24, 40, .07);
+}
+
+.lane-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.lane-panel__head strong {
+  color: #344054;
+  font-size: 12px;
+}
+
+.lane-panel__head button {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #d5deeb;
+  border-radius: 5px;
+  background: #f4f8ff;
+  color: #175cd3;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.lane-panel__head button:hover {
+  background: #e3edfd;
+}
+
+.lane-panel__list {
+  max-height: 230px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.lane-panel__empty {
+  padding: 10px;
+  color: #98a2b3;
+  font-size: 11px;
+  text-align: center;
+}
+
+.lane-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: grab;
+  font-size: 11px;
+}
+
+.lane-row:hover {
+  background: #f2f6fd;
+}
+
+.lane-row--collapsed .lane-row__name {
+  color: #98a2b3;
+  text-decoration: line-through;
+}
+
+.lane-row__toggle {
+  width: 14px;
+  color: #667085;
+  cursor: pointer;
+  font-size: 9px;
+  text-align: center;
+}
+
+.lane-row__name {
+  flex: 1;
+  overflow: hidden;
+  color: #344054;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane-row__count {
+  color: #98a2b3;
+  font-size: 9px;
+}
+
+.lane-row__delete {
+  width: 16px;
+  color: #b0b9c6;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: center;
+}
+
+.lane-row__delete:hover {
+  color: #c2413b;
+}
+
 .canvas-actions {
   position: absolute;
   right: 12px;

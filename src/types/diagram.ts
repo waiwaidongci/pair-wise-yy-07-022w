@@ -13,8 +13,17 @@ export interface DiagramNode {
   color: string;
   locked: boolean;
   groupId: string | null;
+  swimlaneId: string | null;
   zIndex: number;
   fields: string[];
+}
+
+export interface Swimlane {
+  id: string;
+  name: string;
+  height: number;
+  collapsed: boolean;
+  color: string;
 }
 
 export interface DiagramConnector {
@@ -35,6 +44,7 @@ export interface DiagramDocument {
   title: string;
   nodes: DiagramNode[];
   connectors: DiagramConnector[];
+  swimlanes: Swimlane[];
   updatedAt: number;
 }
 

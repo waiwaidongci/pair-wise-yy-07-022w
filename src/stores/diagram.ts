@@ -4,9 +4,11 @@ import type {
   DiagramDocument,
   DiagramNode,
   NodeKind,
+  Swimlane,
   ToolMode,
 } from '../types/diagram';
 import { DEFAULT_NODE_SIZE } from '../utils/diagramGeometry';
+import { deriveLanes, laneAtY, laneRects, makeLane, MIN_LANE_HEIGHT } from '../utils/laneGeometry';
 
 const STORAGE_KEY = 'pair-wise-yy-07-diagram';
 let persistTimer: number | undefined;
@@ -32,6 +34,7 @@ function initialNodes(): DiagramNode[] {
       color: '#ffffff',
       locked: false,
       groupId: null,
+      swimlaneId: null,
       zIndex: 1,
       fields: ['id  BIGINT PK', 'name  VARCHAR(80)', 'region  VARCHAR(20)', 'credit_limit DECIMAL'],
     },
@@ -46,6 +49,7 @@ function initialNodes(): DiagramNode[] {
       color: '#ffffff',
       locked: false,
       groupId: null,
+      swimlaneId: null,
       zIndex: 2,
       fields: ['id  BIGINT PK', 'customer_id  BIGINT FK', 'amount  DECIMAL', 'status VARCHAR(20)'],
     },
@@ -60,6 +64,7 @@ function initialNodes(): DiagramNode[] {
       color: '#fff7e8',
       locked: false,
       groupId: null,
+      swimlaneId: null,
       zIndex: 3,
       fields: [],
     },
@@ -74,6 +79,7 @@ function initialNodes(): DiagramNode[] {
       color: '#eaf7f0',
       locked: false,
       groupId: null,
+      swimlaneId: null,
       zIndex: 4,
       fields: [],
     },
@@ -88,6 +94,7 @@ function initialNodes(): DiagramNode[] {
       color: '#eef4ff',
       locked: false,
       groupId: null,
+      swimlaneId: null,
       zIndex: 5,
       fields: [],
     },
@@ -163,13 +170,43 @@ function loadDocument(): DiagramDocument | null {
   }
 }
 
-const savedDocument = loadDocument();
+interface InitialState {
+  title: string;
+  nodes: DiagramNode[];
+  connectors: DiagramConnector[];
+  swimlanes: Swimlane[];
+}
+
+function buildInitialState(): InitialState {
+  const saved = loadDocument();
+  const baseNodes = saved?.nodes ?? initialNodes();
+  const baseConnectors = saved?.connectors ?? initialConnectors();
+  if (saved && Array.isArray(saved.swimlanes) && saved.swimlanes.length) {
+    return {
+      title: saved.title,
+      nodes: baseNodes.map((node) => ({ ...node, swimlaneId: node.swimlaneId ?? null })),
+      connectors: baseConnectors,
+      swimlanes: saved.swimlanes,
+    };
+  }
+  // 旧数据兼容：没有泳道信息时按纵向聚类派生泳道，分过组的图元归到同一条泳道。
+  const { lanes, assignments } = deriveLanes(baseNodes);
+  return {
+    title: saved?.title ?? '订单履约架构图',
+    nodes: baseNodes.map((node) => ({ ...node, swimlaneId: assignments.get(node.id) ?? null })),
+    connectors: baseConnectors,
+    swimlanes: lanes,
+  };
+}
+
+const initialState = buildInitialState();
 
 export const useDiagramStore = defineStore('diagram', {
   state: () => ({
-    title: savedDocument?.title ?? '订单履约架构图',
-    nodes: savedDocument?.nodes ?? initialNodes(),
-    connectors: savedDocument?.connectors ?? initialConnectors(),
+    title: initialState.title,
+    nodes: initialState.nodes,
+    connectors: initialState.connectors,
+    swimlanes: initialState.swimlanes,
     selectedIds: [] as string[],
     selectedConnectorId: null as string | null,
     activeNodeId: null as string | null,
@@ -197,6 +234,7 @@ export const useDiagramStore = defineStore('diagram', {
         title: this.title,
         nodes: clonePlain(this.nodes),
         connectors: clonePlain(this.connectors),
+        swimlanes: clonePlain(this.swimlanes),
         updatedAt: Date.now(),
       };
     },
@@ -219,8 +257,9 @@ export const useDiagramStore = defineStore('diagram', {
     },
     restore(document: DiagramDocument) {
       this.title = document.title;
-      this.nodes = clonePlain(document.nodes);
+      this.nodes = clonePlain(document.nodes).map((node) => ({ ...node, swimlaneId: node.swimlaneId ?? null }));
       this.connectors = clonePlain(document.connectors);
+      this.swimlanes = Array.isArray(document.swimlanes) ? clonePlain(document.swimlanes) : [];
       this.selectedIds = this.selectedIds.filter((id) => this.nodes.some((node) => node.id === id));
       this.selectedConnectorId = null;
       this.activeNodeId = this.selectedIds.at(-1) ?? null;
@@ -250,9 +289,12 @@ export const useDiagramStore = defineStore('diagram', {
         color: kind === 'table' ? '#ffffff' : '#eef4ff',
         locked: false,
         groupId: null,
+        swimlaneId: null,
         zIndex: Math.max(0, ...this.nodes.map((item) => item.zIndex)) + 1,
         fields: kind === 'table' ? ['id  BIGINT PK', 'name  VARCHAR(80)'] : [],
       };
+      const lane = laneAtY(this.swimlanes, point.y + size.height / 2);
+      node.swimlaneId = lane?.lane.id ?? this.swimlanes[0]?.id ?? null;
       this.nodes.push(node);
       this.selectNode(node.id);
       this.persistSoon();
@@ -394,6 +436,91 @@ export const useDiagramStore = defineStore('diagram', {
       this.checkpoint();
       this.nodes.forEach((node) => {
         if (this.selectedIds.includes(node.id)) node.groupId = null;
+      });
+      this.persistSoon();
+    },
+    addLane() {
+      this.checkpoint();
+      const lane = makeLane(`泳道 ${this.swimlanes.length + 1}`, this.swimlanes.length);
+      this.swimlanes.push(lane);
+      this.persistSoon();
+    },
+    removeLane(id: string) {
+      this.checkpoint();
+      this.swimlanes = this.swimlanes.filter((lane) => lane.id !== id);
+      this.nodes.forEach((node) => {
+        if (node.swimlaneId === id) node.swimlaneId = null;
+      });
+      this.persistSoon();
+    },
+    renameLane(id: string, name: string) {
+      const lane = this.swimlanes.find((item) => item.id === id);
+      if (!lane) return;
+      const trimmed = name.trim();
+      if (trimmed && trimmed !== lane.name) {
+        this.checkpoint();
+        lane.name = trimmed;
+        this.persistSoon();
+      }
+    },
+    toggleLaneCollapse(id: string) {
+      this.checkpoint();
+      const lane = this.swimlanes.find((item) => item.id === id);
+      if (lane) lane.collapsed = !lane.collapsed;
+      this.persistSoon();
+    },
+    /** 把泳道移动到 toIndex，图元跟着泳道走。 */
+    reorderLane(id: string, toIndex: number) {
+      const fromIndex = this.swimlanes.findIndex((lane) => lane.id === id);
+      if (fromIndex < 0 || toIndex < 0 || toIndex >= this.swimlanes.length) return;
+      this.checkpoint();
+      const oldY = new Map(laneRects(this.swimlanes).map((rect) => [rect.lane.id, rect.y]));
+      const next = [...this.swimlanes];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      laneRects(next).forEach((rect) => {
+        const previousY = oldY.get(rect.lane.id);
+        if (previousY === undefined) return;
+        const dy = rect.y - previousY;
+        if (Math.abs(dy) > 0.5) {
+          this.nodes.forEach((node) => {
+            if (node.swimlaneId === rect.lane.id) node.y += dy;
+          });
+        }
+      });
+      this.swimlanes = next;
+      this.persistSoon();
+    },
+    /** 调整泳道高度，下方泳道整体平移，图元跟着泳道走。 */
+    resizeLane(id: string, height: number) {
+      const rects = laneRects(this.swimlanes);
+      const index = rects.findIndex((rect) => rect.lane.id === id);
+      if (index < 0) return;
+      const lane = this.swimlanes[index];
+      const contentBottom = Math.max(
+        ...this.nodes.filter((node) => node.swimlaneId === id).map((node) => node.y + node.height),
+        -Infinity,
+      );
+      const minHeight = Math.max(MIN_LANE_HEIGHT, contentBottom - rects[index].y + 24);
+      const clamped = Math.max(minHeight, Math.round(height));
+      if (Math.abs(clamped - lane.height) < 0.5) return;
+      this.checkpoint();
+      const delta = clamped - lane.height;
+      lane.height = clamped;
+      if (Math.abs(delta) > 0.5) {
+        const below = new Set(this.swimlanes.slice(index + 1).map((item) => item.id));
+        this.nodes.forEach((node) => {
+          if (node.swimlaneId && below.has(node.swimlaneId)) node.y += delta;
+        });
+      }
+      this.persistSoon();
+    },
+    assignNodesToLane(nodeIds: string[], laneId: string | null) {
+      if (!nodeIds.length) return;
+      this.checkpoint();
+      nodeIds.forEach((id) => {
+        const node = this.nodes.find((item) => item.id === id);
+        if (node) node.swimlaneId = laneId;
       });
       this.persistSoon();
     },

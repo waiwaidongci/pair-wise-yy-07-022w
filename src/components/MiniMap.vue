@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useDiagramStore } from '../stores/diagram';
+import { COLLAPSED_LANE_HEIGHT, laneColor, laneRects } from '../utils/laneGeometry';
 
 const store = useDiagramStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -65,6 +66,24 @@ function draw() {
     context.stroke();
   }
 
+  const rects = laneRects(store.swimlanes);
+  rects.forEach((rect) => {
+    const colors = laneColor(rect.index);
+    const topLeft = toScreen(bounds.value.minX, rect.y);
+    const bottomRight = toScreen(bounds.value.maxX, rect.bottom);
+    context.fillStyle = colors.fill;
+    context.strokeStyle = colors.stroke;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.rect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, Math.max(2, bottomRight.y - topLeft.y));
+    context.fill();
+    context.stroke();
+    if (!rect.collapsed) {
+      context.fillStyle = colors.header;
+      context.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, 4);
+    }
+  });
+
   store.connectors.forEach((connector) => {
     const from = store.nodes.find((node) => node.id === connector.fromId);
     const to = store.nodes.find((node) => node.id === connector.toId);
@@ -99,7 +118,7 @@ function draw() {
 }
 
 watch(
-  () => [store.nodes, store.connectors, store.selectedIds],
+  () => [store.nodes, store.connectors, store.swimlanes, store.selectedIds],
   () => void nextTick(draw),
   { deep: true },
 );
