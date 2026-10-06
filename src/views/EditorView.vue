@@ -45,8 +45,7 @@ async function importFile(event: Event) {
     const document = JSON.parse(await file.text()) as DiagramDocument;
     if (document.version !== 1 || !Array.isArray(document.nodes) || !Array.isArray(document.connectors)) {
       throw new Error('文件结构不符合 FrameFlow v1 格式');
-    }
-    store.importDocument(document);
+    }    store.importDocument(document);
     ElMessage.success(`已导入 ${file.name}`);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '导入失败');
@@ -175,6 +174,7 @@ function run(action: () => void, message?: string) {
     <footer class="editor-status">
       <span><Document /> {{ store.nodes.length }} 个图元</span>
       <span><Connection /> {{ store.connectors.length }} 条连接</span>
+      <span>泳道 {{ store.swimlanes.length }} 条</span>
       <span>选择 {{ store.selectedIds.length }} 项</span>
       <span class="status-spacer" />
       <span>缩放 {{ Math.round(store.zoom * 100) }}%</span>

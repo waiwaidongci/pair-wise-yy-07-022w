@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { computed, ref, watch } from 'vue';
 import { useDiagramStore } from '../stores/diagram';
 import type { AnchorSide } from '../types/diagram';
+import { LANE_HEADER_HEIGHT } from '../utils/swimlaneLayout';
 
 const store = useDiagramStore();
 const textDraft = ref('');
@@ -44,6 +45,15 @@ function applyFields() {
   });
 }
 
+function changeLane(laneId: string | null) {
+  if (store.selectedIds.length) {
+    store.assignNodesToLane([...store.selectedIds], laneId);
+    ElMessage.success(laneId ? '图元已移入泳道' : '图元已移出泳道');
+  } else if (store.activeNode) {
+    store.assignNodesToLane([store.activeNode.id], laneId);
+  }
+}
+
 async function removeSelection() {
   try {
     await ElMessageBox.confirm('删除当前选中的图元和连接线？', '删除确认', {
@@ -57,6 +67,43 @@ async function removeSelection() {
     // 用户取消时保持选择不变。
   }
 }
+
+async function renameLane() {
+  if (!store.selectedLane) return;
+  try {
+    const { value } = await ElMessageBox.prompt('请输入泳道（部门）名称', '泳道命名', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: store.selectedLane.name,
+      inputValidator: (value) => (value && value.trim().length > 0) || '名称不能为空',
+    });
+    store.renameLane(store.selectedLane.id, value);
+  } catch {
+    // 取消
+  }
+}
+
+async function deleteLane(strategy: 'keepMembers' | 'deleteMembers') {
+  const lane = store.selectedLane;
+  if (!lane) return;
+  try {
+    await ElMessageBox.confirm(
+      strategy === 'deleteMembers'
+        ? `删除泳道「${lane.name}」及其内部全部图元？`
+        : `删除泳道「${lane.name}」？内部图元将保留在泳道外。`,
+      '删除泳道',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+    store.deleteLane(lane.id, strategy);
+    ElMessage.success('泳道已删除');
+  } catch {
+    // 取消
+  }
+}
 </script>
 
 <template>
@@ -66,12 +113,88 @@ async function removeSelection() {
       <span>{{ store.selectedIds.length }} 个图元</span>
     </div>
 
-    <template v-if="store.activeNode">
+    <template v-if="store.selectedLane">
+      <div class="property-group">
+        <div class="section-label">泳道信息</div>
+        <label>
+          <span>名称（部门）</span>
+          <el-input
+            :model-value="store.selectedLane.name"
+            @change="store.renameLane(store.selectedLane!.id, String($event))"
+          />
+        </label>
+        <el-button @click="renameLane">重命名泳道</el-button>
+        <label>
+          <span>底色</span>
+          <el-color-picker
+            :model-value="store.selectedLane.color"
+            @change="store.patchLane(store.selectedLane!.id, { color: String($event) })"
+          />
+        </label>
+        <div class="two-fields">
+          <label>
+            <span>宽度</span>
+            <el-input-number
+              :model-value="store.selectedLane.width"
+              :min="320"
+              :max="3000"
+              controls-position="right"
+              @change="store.patchLane(store.selectedLane!.id, { width: Number($event) })"
+            />
+          </label>
+          <label>
+            <span>总高度</span>
+            <el-input-number
+              :model-value="store.selectedLane.height + LANE_HEADER_HEIGHT"
+              :min="LANE_HEADER_HEIGHT + 60"
+              :max="2000"
+              controls-position="right"
+              @change="store.patchLane(store.selectedLane!.id, { height: Number($event) })"
+            />
+          </label>
+        </div>
+        <el-button
+          :type="store.selectedLane.collapsed ? 'primary' : 'default'"
+          @click="store.toggleLaneCollapsed(store.selectedLane!.id)"
+        >
+          {{ store.selectedLane.collapsed ? '展开泳道' : '折叠泳道' }}
+        </el-button>
+      </div>
+      <div class="property-group">
+        <div class="section-label">成员图元</div>
+        <div class="lane-members">
+          {{ store.nodes.filter((node) => node.laneId === store.selectedLane!.id).length }} 个图元归属此泳道
+        </div>
+        <el-button @click="deleteLane('keepMembers')">删除泳道（保留图元）</el-button>
+        <el-button type="danger" plain @click="deleteLane('deleteMembers')">
+          删除泳道及内部图元
+        </el-button>
+      </div>
+    </template>
+
+    <template v-else-if="store.activeNode">
       <div class="property-group">
         <div class="section-label">基础信息</div>
         <label>
           <span>名称 / 标题</span>
           <el-input v-model="textDraft" @blur="applyText" @keydown.enter="applyText" />
+        </label>
+        <label>
+          <span>所属泳道（部门）</span>
+          <el-select
+            :model-value="store.activeNode.laneId"
+            placeholder="泳道外（自由图元）"
+            clearable
+            @change="changeLane(($event as string | null) ?? null)"
+          >
+            <el-option label="泳道外（自由图元）" :value="null" />
+            <el-option
+              v-for="lane in store.swimlanes"
+              :key="lane.id"
+              :label="lane.name"
+              :value="lane.id"
+            />
+          </el-select>
         </label>
         <div class="two-fields">
           <label>
@@ -204,7 +327,10 @@ async function removeSelection() {
 
     <div v-else class="empty-properties">
       <strong>未选择对象</strong>
-      <span>在画布中选择图元或连接线后，可在此调整文字、位置、颜色、锁定和层级。</span>
+      <span>
+        单击泳道可重命名、折叠和调整宽度；把图元拖进泳道即归属该泳道，
+        也可以在此选择所属部门。
+      </span>
     </div>
 
     <div v-if="store.selectedIds.length || activeConnector" class="danger-zone">

@@ -13,8 +13,23 @@ export interface DiagramNode {
   color: string;
   locked: boolean;
   groupId: string | null;
+  /** 所属泳道；同一图元只归一条泳道，null 表示泳道外的自由图元。 */
+  laneId: string | null;
   zIndex: number;
   fields: string[];
+}
+
+export interface Swimlane {
+  id: string;
+  name: string;
+  color: string;
+  /** 全部展开时的规范左上角与尺寸（折叠不会改写这些值）。 */
+  x: number;
+  y: number;
+  width: number;
+  /** 展开时的主体高度（不含标题条）。 */
+  height: number;
+  collapsed: boolean;
 }
 
 export interface DiagramConnector {
@@ -35,12 +50,20 @@ export interface DiagramDocument {
   title: string;
   nodes: DiagramNode[];
   connectors: DiagramConnector[];
+  swimlanes: Swimlane[];
   updatedAt: number;
 }
 
 export interface Point {
   x: number;
   y: number;
+}
+
+export interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface AnchorPoint extends Point {

@@ -1,19 +1,36 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useDiagramStore } from '../stores/diagram';
+import { computeSwimLayout } from '../utils/swimlaneLayout';
 
 const store = useDiagramStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const width = 214;
 const height = 118;
 
+const layout = computed(() => computeSwimLayout(store.swimlanes, store.nodes));
+
 const bounds = computed(() => {
-  const nodes = store.nodes;
-  if (!nodes.length) return { minX: 0, minY: 0, maxX: 1000, maxY: 700 };
-  const minX = Math.min(...nodes.map((node) => node.x)) - 50;
-  const minY = Math.min(...nodes.map((node) => node.y)) - 50;
-  const maxX = Math.max(...nodes.map((node) => node.x + node.width)) + 50;
-  const maxY = Math.max(...nodes.map((node) => node.y + node.height)) + 50;
+  const current = layout.value;
+  const candidates: Array<{ x: number; y: number; right: number; bottom: number }> = [];
+  current.lanes.forEach((lane) => {
+    candidates.push({ x: lane.x, y: lane.y, right: lane.x + lane.width, bottom: lane.y + lane.height });
+  });
+  store.nodes.forEach((node) => {
+    const placement = current.nodes.get(node.id);
+    if (!placement?.visible) return;
+    candidates.push({
+      x: node.x,
+      y: placement.y,
+      right: node.x + node.width,
+      bottom: placement.y + node.height,
+    });
+  });
+  if (!candidates.length) return { minX: 0, minY: 0, maxX: 1000, maxY: 700 };
+  const minX = Math.min(...candidates.map((item) => item.x)) - 30;
+  const minY = Math.min(...candidates.map((item) => item.y)) - 30;
+  const maxX = Math.max(...candidates.map((item) => item.right)) + 30;
+  const maxY = Math.max(...candidates.map((item) => item.bottom)) + 30;
   return { minX, minY, maxX: Math.max(maxX, minX + 500), maxY: Math.max(maxY, minY + 360) };
 });
 
@@ -65,12 +82,34 @@ function draw() {
     context.stroke();
   }
 
+  // 泳道
+  layout.value.lanes.forEach((lane) => {
+    const point = toScreen(lane.x, lane.y);
+    context.fillStyle = lane.color + '55';
+    context.strokeStyle = store.selectedLaneId === lane.id ? '#1769ff' : '#b9c8de';
+    context.lineWidth = store.selectedLaneId === lane.id ? 1.6 : 1;
+    context.beginPath();
+    context.roundRect(
+      point.x,
+      point.y,
+      Math.max(4, lane.width * getTransform().scale),
+      Math.max(lane.collapsed ? 5 : 8, lane.height * getTransform().scale),
+      3,
+    );
+    context.fill();
+    context.stroke();
+  });
+
+  // 连线（显示坐标，折叠中的隐藏）
   store.connectors.forEach((connector) => {
     const from = store.nodes.find((node) => node.id === connector.fromId);
     const to = store.nodes.find((node) => node.id === connector.toId);
     if (!from || !to) return;
-    const start = toScreen(from.x + from.width / 2, from.y + from.height / 2);
-    const end = toScreen(to.x + to.width / 2, to.y + to.height / 2);
+    const fromPlacement = layout.value.nodes.get(from.id);
+    const toPlacement = layout.value.nodes.get(to.id);
+    if (!fromPlacement?.visible || !toPlacement?.visible) return;
+    const start = toScreen(from.x + from.width / 2, fromPlacement.y + from.height / 2);
+    const end = toScreen(to.x + to.width / 2, toPlacement.y + to.height / 2);
     context.strokeStyle = connector.color;
     context.lineWidth = 1.2;
     context.beginPath();
@@ -80,9 +119,11 @@ function draw() {
   });
 
   store.nodes.forEach((node) => {
-    const point = toScreen(node.x, node.y);
+    const placement = layout.value.nodes.get(node.id);
+    if (!placement?.visible) return;
+    const point = toScreen(node.x, placement.y);
     const transform = getTransform();
-    context.fillStyle = node.color;
+    context.fillStyle = node.laneId ? node.color : '#ffffff';
     context.strokeStyle = store.selectedIds.includes(node.id) ? '#1769ff' : '#8b9bb3';
     context.lineWidth = store.selectedIds.includes(node.id) ? 2 : 1;
     context.beginPath();
@@ -99,7 +140,7 @@ function draw() {
 }
 
 watch(
-  () => [store.nodes, store.connectors, store.selectedIds],
+  () => [store.nodes, store.connectors, store.swimlanes, store.selectedIds, store.selectedLaneId],
   () => void nextTick(draw),
   { deep: true },
 );
@@ -111,7 +152,7 @@ onMounted(draw);
   <div class="mini-map">
     <div class="mini-map__head">
       <strong>缩略图</strong>
-      <span>{{ Math.round(store.zoom * 100) }}%</span>
+      <span>{{ store.swimlanes.length }} 条泳道 · {{ Math.round(store.zoom * 100) }}%</span>
     </div>
     <canvas ref="canvasRef" />
   </div>

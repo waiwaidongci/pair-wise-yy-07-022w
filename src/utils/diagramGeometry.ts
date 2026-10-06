@@ -2,10 +2,12 @@ import type {
   AlignmentGuide,
   AnchorPoint,
   AnchorSide,
+  Box,
   DiagramConnector,
   DiagramNode,
   Point,
 } from '../types/diagram';
+import type { SwimLayout } from './swimlaneLayout';
 
 export const DEFAULT_NODE_SIZE: Record<DiagramNode['kind'], { width: number; height: number }> = {
   rectangle: { width: 160, height: 72 },
@@ -14,21 +16,39 @@ export const DEFAULT_NODE_SIZE: Record<DiagramNode['kind'], { width: number; hei
   table: { width: 210, height: 152 },
 };
 
-export function anchorPoint(node: DiagramNode, side: AnchorSide): AnchorPoint {
-  const center = nodeCenter(node);
-  if (side === 'top') return { x: center.x, y: node.y, side };
-  if (side === 'right') return { x: node.x + node.width, y: center.y, side };
-  if (side === 'bottom') return { x: center.x, y: node.y + node.height, side };
-  return { x: node.x, y: center.y, side };
+export function boxCenter(box: Box): Point {
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+export function anchorPointForBox(box: Box, side: AnchorSide): AnchorPoint {
+  const center = boxCenter(box);
+  if (side === 'top') return { x: center.x, y: box.y, side };
+  if (side === 'right') return { x: box.x + box.width, y: center.y, side };
+  if (side === 'bottom') return { x: center.x, y: box.y + box.height, side };
+  return { x: box.x, y: center.y, side };
 }
 
 export function nodeCenter(node: DiagramNode): Point {
   return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
 }
 
-export function chooseAnchors(from: DiagramNode, to: DiagramNode) {
-  const deltaX = nodeCenter(to).x - nodeCenter(from).x;
-  const deltaY = nodeCenter(to).y - nodeCenter(from).y;
+export function displayBoxes(nodes: DiagramNode[], layout: SwimLayout): Map<string, Box> {
+  const boxes = new Map<string, Box>();
+  nodes.forEach((node) => {
+    const placement = layout.nodes.get(node.id);
+    boxes.set(node.id, {
+      x: node.x,
+      y: placement?.y ?? node.y,
+      width: node.width,
+      height: node.height,
+    });
+  });
+  return boxes;
+}
+
+export function chooseAnchors(from: Box, to: Box) {
+  const deltaX = boxCenter(to).x - boxCenter(from).x;
+  const deltaY = boxCenter(to).y - boxCenter(from).y;
   if (Math.abs(deltaX) >= Math.abs(deltaY)) {
     return {
       from: deltaX >= 0 ? 'right' : 'left',
@@ -41,6 +61,10 @@ export function chooseAnchors(from: DiagramNode, to: DiagramNode) {
   };
 }
 
+/**
+ * 经典正交路由（同泳道 / 自由图元场景）。保留供外部（如缩略图）使用；
+ * 画布统一走 swimlaneLayout 中的泳道感知路由。
+ */
 export function routeConnector(
   connector: DiagramConnector,
   nodes: DiagramNode[],
@@ -48,8 +72,8 @@ export function routeConnector(
   const from = nodes.find((node) => node.id === connector.fromId);
   const to = nodes.find((node) => node.id === connector.toId);
   if (!from || !to) return [];
-  const start = anchorPoint(from, connector.fromAnchor);
-  const end = anchorPoint(to, connector.toAnchor);
+  const start = anchorPointForBox(from, connector.fromAnchor);
+  const end = anchorPointForBox(to, connector.toAnchor);
   const startDirection = directionForAnchor(connector.fromAnchor);
   const endDirection = directionForAnchor(connector.toAnchor);
   const startLead = {
@@ -65,7 +89,7 @@ export function routeConnector(
   const collides = path.some((point, index) => {
     if (index === path.length - 1) return false;
     const next = path[index + 1];
-    return obstacles.some((node) => segmentIntersectsNode(point, next, node, 12));
+    return obstacles.some((node) => segmentIntersectsBox(point, next, node, 12));
   });
   if (!collides) return flattenPoints([start, ...path, end]);
 
@@ -99,22 +123,22 @@ function orthogonalPath(start: Point, end: Point): Point[] {
     : [start, { x: start.x, y: (start.y + end.y) / 2 }, { x: end.x, y: (start.y + end.y) / 2 }, end];
 }
 
-function segmentIntersectsNode(start: Point, end: Point, node: DiagramNode, padding: number) {
+function segmentIntersectsBox(start: Point, end: Point, box: Box, padding: number) {
   const minX = Math.min(start.x, end.x);
   const maxX = Math.max(start.x, end.x);
   const minY = Math.min(start.y, end.y);
   const maxY = Math.max(start.y, end.y);
   return (
-    maxX >= node.x - padding &&
-    minX <= node.x + node.width + padding &&
-    maxY >= node.y - padding &&
-    minY <= node.y + node.height + padding
+    maxX >= box.x - padding &&
+    minX <= box.x + box.width + padding &&
+    maxY >= box.y - padding &&
+    minY <= box.y + box.height + padding
   );
 }
 
-function mergedBounds(nodes: DiagramNode[]) {
-  const minX = Math.min(...nodes.map((node) => node.x));
-  const minY = Math.min(...nodes.map((node) => node.y));
+function mergedBounds(boxes: Box[]) {
+  const minX = Math.min(...boxes.map((box) => box.x));
+  const minY = Math.min(...boxes.map((box) => box.y));
   return { x: minX, y: minY };
 }
 
@@ -132,20 +156,18 @@ function dedupePoints(points: Point[]): Point[] {
 }
 
 export function calculateAlignmentGuides(
-  activeNodes: DiagramNode[],
-  allNodes: DiagramNode[],
+  activeBoxes: Box[],
+  otherBoxes: Box[],
   threshold: number,
 ): AlignmentGuide[] {
-  const activeIds = new Set(activeNodes.map((node) => node.id));
-  const otherNodes = allNodes.filter((node) => !activeIds.has(node.id));
   const guides: AlignmentGuide[] = [];
-  if (!activeNodes.length || activeNodes.length > 1) return guides;
-  const active = activeNodes[0];
+  if (!activeBoxes.length || activeBoxes.length > 1) return guides;
+  const active = activeBoxes[0];
   const activePoints = {
     x: [active.x, active.x + active.width / 2, active.x + active.width],
     y: [active.y, active.y + active.height / 2, active.y + active.height],
   };
-  otherNodes.forEach((other) => {
+  otherBoxes.forEach((other) => {
     const otherX = [other.x, other.x + other.width / 2, other.x + other.width];
     const otherY = [other.y, other.y + other.height / 2, other.y + other.height];
     otherX.forEach((position) => {

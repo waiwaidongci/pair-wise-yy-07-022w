@@ -9,7 +9,7 @@ import {
   Plus,
 } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import type { DiagramNode, NodeKind } from '../types/diagram';
+import type { NodeKind } from '../types/diagram';
 import { useDiagramStore } from '../stores/diagram';
 
 const store = useDiagramStore();
@@ -61,6 +61,22 @@ function add(kind: NodeKind) {
   ElMessage.success('已添加图元，可拖动调整位置');
 }
 
+function addLane() {
+  store.addLane();
+  ElMessage.success('已新建泳道，双击标题可命名');
+}
+
+function moveLane(index: number, direction: -1 | 1) {
+  const lane = store.swimlanes[index];
+  const target = store.swimlanes[index + direction];
+  if (!lane || !target) return;
+  store.moveLane(lane.id, target.id, direction === -1 ? 'before' : 'after');
+}
+
+function toggleLane(id: string) {
+  store.toggleLaneCollapsed(id);
+}
+
 function addGroup() {
   if (store.selectedIds.length < 2) {
     ElMessage.warning('请先按住 Shift 选择至少两个图元');
@@ -107,6 +123,41 @@ function addTableField(): void {
         </span>
         <Plus class="shape-card__plus" />
       </button>
+    </div>
+
+    <div class="palette-section">
+      <div class="section-label">泳道（部门）</div>
+      <el-button class="full-button" :icon="Aim" @click="addLane">新建泳道</el-button>
+      <ul v-if="store.swimlanes.length" class="lane-list">
+        <li v-for="(lane, index) in store.swimlanes" :key="lane.id">
+          <span class="lane-swatch" :style="{ background: lane.color }" />
+          <button
+            type="button"
+            class="lane-name"
+            :class="{ 'is-selected': store.selectedLaneId === lane.id }"
+            :title="lane.collapsed ? '展开泳道' : '折叠泳道'"
+            @click="toggleLane(lane.id)"
+            @dblclick.stop="store.selectLane(lane.id)"
+          >
+            <strong>{{ lane.name }}</strong>
+            <small>{{ lane.collapsed ? '已折叠' : `${store.nodes.filter((n) => n.laneId === lane.id).length} 个图元` }}</small>
+          </button>
+          <span class="lane-order">
+            <button type="button" :disabled="index === 0" title="上移" @click="moveLane(index, -1)">↑</button>
+            <button
+              type="button"
+              :disabled="index === store.swimlanes.length - 1"
+              title="下移"
+              @click="moveLane(index, 1)"
+            >
+              ↓
+            </button>
+          </span>
+        </li>
+      </ul>
+      <small class="preference-note">
+        拖图元进入泳道完成归属；拖泳道标题调整先后；点圆点折叠 / 展开。
+      </small>
     </div>
 
     <div class="palette-section">

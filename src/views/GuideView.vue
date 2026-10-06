@@ -38,6 +38,35 @@ import { Back, Connection, Grid, Rank } from '@element-plus/icons-vue';
         </div>
       </section>
       <section>
+        <h2>泳道（部门）</h2>
+        <div class="guide-grid">
+          <article>
+            <Rank />
+            <h3>划分与命名</h3>
+            <p>
+              点击“新建泳道”把画布划分为可命名的横向泳道；双击泳道标题条或在右侧属性面板重命名。
+              每个图元只归一条泳道，把图元拖进泳道主体即完成归属，拖出则变为自由图元。
+            </p>
+          </article>
+          <article>
+            <Connection />
+            <h3>折叠与展开</h3>
+            <p>
+              点击标题左侧圆点折叠泳道，内部图元与连线一起收起，再展开时位置保持不变；
+              泳道的先后顺序和折叠状态会随文档保存，重新打开仍然有效。
+            </p>
+          </article>
+          <article>
+            <Grid />
+            <h3>排序与跨泳道连线</h3>
+            <p>
+              上下拖动泳道标题条（或左侧列表的箭头）调整部门先后，图元跟随泳道移动。
+              跨泳道连线会自动贴到泳道边界重新走线，只有受影响的连线会重算路径。
+            </p>
+          </article>
+        </div>
+      </section>
+      <section>
         <h2>快捷键</h2>
         <div class="shortcut-table">
           <span><kbd>Ctrl/Cmd + Z</kbd><em>撤销</em></span>
